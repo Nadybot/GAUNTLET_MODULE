@@ -1,0 +1,7 @@
+name = "GAUNTLET_MODULE"
+description = "Keep track of Vizaresh and gauntlet buff"
+version = "1.0.0"
+github = "Nadybot/GAUNTLET_MODULE"
+author = "Nadyita"
+bot_type = "Nadybot"
+bot_version = "^5.0.0-beta1"
