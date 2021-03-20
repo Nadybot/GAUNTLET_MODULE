@@ -103,6 +103,8 @@ use Nadybot\Modules\TIMERS_MODULE\TimerController;
  */
 class GauntletController {
 
+	public const SIDE_NONE = 'none';
+
 	/**
 	 * Name of the module.
 	 * Set automatically by module loader.
@@ -232,8 +234,17 @@ class GauntletController {
 			"edit",
 			"options",
 			"1",
-			"Yes;No",
+			"true;false",
 			"1;0"
+		);
+		$this->settingManager->add(
+			$this->moduleName,
+			"gaubuff_default_side",
+			"Implicit gauntlet buff side if none specified",
+			"edit",
+			"options",
+			"none",
+			"none;clan;omni"
 		);
 	}
 
@@ -618,28 +629,23 @@ class GauntletController {
 	//***   Gaubuff timer
 	//**************************************
 
-	public function getGauBuffCreator() {
-		$timer = $this->timerController->get('Gaubuff');
-		if ($timer === null) {
-			return null;
-		}
-		return json_decode($timer->data, true);
-	}
-
-	public function setGaubuff($time, $creator, $createtime) {
+	public function setGaubuff(string $side, string $time, string $creator, int $createtime): void {
 		$alerts = [];
 		foreach (explode(' ', $this->settingManager->get('gaubuff_times')) as $utime) {
 			$alertTimes[] = $this->util->parseTime($utime);
 		}
 		$alertTimes[] = 0;                  //timer runs out
 		foreach ($alertTimes as $alertTime) {
-			if (($time - $alertTime)>time()) {
+			if (($time - $alertTime) > time()) {
 				$alert = new Alert();
 				$alert->time = $time - $alertTime;
-				if ($alertTime == 0) {
-					$alert->message = $this->settingManager->get('gauntlet_color')."Gauntlet buff <highlight>expired<end>!<end>";
+				$alert->message = "<{$side}>" . ucfirst($side) . " Gauntlet buff<end> ".
+					$this->settingManager->get('gauntlet_color');
+				if ($alertTime === 0) {
+					$alert->message .= "<highlight>expired<end>!<end>";
 				} else {
-					$alert->message = $this->settingManager->get('gauntlet_color')."Gauntlet buff runs out in <highlight>".$this->util->unixtimeToReadable($alertTime)."<end>!<end>";
+					$alert->message .= "runs out in <highlight>".
+						$this->util->unixtimeToReadable($alertTime)."<end>!<end>";
 				}
 				$alerts []= $alert;
 			}
@@ -649,8 +655,8 @@ class GauntletController {
 		$data['creator'] = $creator;
 		$data['repeat'] = 0;
 		//*** Add Timers
-		$this->timerController->remove('Gaubuff');
-		$this->timerController->add('Gaubuff', $this->chatBot->vars['name'], $this->settingManager->get('gauntlet_channels'), $alerts, "GauntletController.gaubuffcallback", json_encode($data));
+		$this->timerController->remove("Gaubuff_{$side}");
+		$this->timerController->add("Gaubuff_{$side}", $this->chatBot->vars['name'], $this->settingManager->get('gauntlet_channels'), $alerts, "GauntletController.gaubuffcallback", json_encode($data));
 	}
 
 	public function gaubuffcallback($timer, $alert) {
@@ -664,24 +670,41 @@ class GauntletController {
 		}
 	}
 
+	protected function showGauntletBuff(string $sender): void {
+		$sides = $this->getSidesToShowBuff($args['side']??null);
+		$msgs = [];
+		foreach ($sides as $side) {
+			$timer = $this->timerController->get("Gaubuff_{$side}");
+			if ($timer === null) {
+				continue;
+			}
+			$msgs []= "<{$side}>" . ucfirst($side) . " Gauntlet buff<end> ".
+					$this->settingManager->get('gauntlet_color').
+					"runs out in <highlight>".
+					$this->util->unixtimeToReadable($timer->endtime - time()).
+					"<end><end>!";
+		}
+		if (empty($msgs)) {
+			return;
+		}
+		$this->chatBot->sendMassTell(
+			join("\n", $msgs),
+			$sender
+		);
+	}
+
 	/**
 	 * @Event("logOn")
 	 * @Description("Sends gaubuff message on logon")
 	 */
 	public function gaubufflogonEvent($eventObj) {
 		$sender = $eventObj->sender;
-		if ($this->chatBot->isReady() && (isset($this->chatBot->guildmembers[$sender])) && ($this->settingManager->get('gaubuff_logon'))) {
-			$timer = $this->timerController->get('Gaubuff');
-			if ($timer !== null) {
-				$this->chatBot->sendTell(
-					$this->settingManager->get('gauntlet_color').
-					"Gauntlet buff runs out in ".
-					"<highlight>".$this->util->unixtimeToReadable($timer->endtime - time())."<end>".
-					"<end>!",
-					$sender
-				);
-			}
+		if (!$this->chatBot->isReady()
+			|| (!isset($this->chatBot->guildmembers[$sender]))
+			|| (!$this->settingManager->get('gaubuff_logon'))) {
+			return;
 		}
+		$this->showGauntletBuff($sender);
 	}
 
 	/**
@@ -691,16 +714,7 @@ class GauntletController {
 	public function privateChannelJoinEvent($eventObj) {
 		$sender = $eventObj->sender;
 		if ($this->settingManager->get('gaubuff_logon')) {
-			$timer = $this->timerController->get('Gaubuff');
-			if ($timer !== null) {
-				$this->chatBot->sendTell(
-					$this->settingManager->get('gauntlet_color').
-					"Gauntlet buff runs out in ".
-					"<highlight>".$this->util->unixtimeToReadable($timer->endtime - time())."<end>".
-					"<end>!",
-					$sender
-				);
-			}
+			$this->showGauntletBuff($sender);
 		}
 	}
 
@@ -709,32 +723,68 @@ class GauntletController {
 	 *
 	 * @HandlesCommand("gaubuff")
 	 * @Matches("/^gaubuff$/i")
-	 * @Matches("/^gaubuff ([a-z0-9 ]+)$/i")
+	 * @Matches("/^gaubuff (?<side>clan|omni)$/i")
+	 * @Matches("/^gaubuff (?<side>clan|omni) (?<time>[a-z0-9 ]+)$/i")
+	 * @Matches("/^gaubuff (?<time>[a-z0-9 ]+)$/i")
 	 */
 	public function gaubuffCommand($message, $channel, $sender, $sendto, $args) {
 		//set time
-		if (isset($args[1])) {
-			$buffEnds = $this->util->parseTime($args[1]);
+		$defaultSide = $this->settingManager->getString('gaubuff_default_side');
+		if (!isset($args['side'])
+			&& isset($args['time'])
+			&& $defaultSide === static::SIDE_NONE
+		) {
+			$msg = "You have to specify for which side the buff is: omni or clan";
+			$sendto->reply($msg);
+			return;
+		}
+		if (isset($args['time'])) {
+			$side = $args['side'] ?? $defaultSide;
+			$buffEnds = $this->util->parseTime($args['time']);
 			if ($buffEnds < 1) {
 				$msg = "You must enter a valid time parameter for the gauntlet buff time.";
 				$sendto->reply($msg);
 				return;
 			}
 			$buffEnds += time();
-			$this->setGaubuff($buffEnds, $sender, time());
-			$msg = "Gauntletbuff timer has been set and expires at <highlight>".$this->tmTime($buffEnds)."<end>.";
+			$this->setGaubuff($side, $buffEnds, $sender, time());
+			$msg = "Gauntletbuff timer for <{$side}>{$side}<end> has been set and expires at <highlight>".$this->tmTime($buffEnds)."<end>.";
 			$sendto->reply($msg);
 			return;
 		}
-		//get time
-		$timer = $this->timerController->get('Gaubuff');
-		if ($timer === null) {
-			$sendto->reply("No Gauntlet buff available!");
+		$sides = $this->getSidesToShowBuff($args['side']??null);
+		$msgs = [];
+		foreach ($sides as $side) {
+			//get time
+			$timer = $this->timerController->get("Gaubuff_{$side}");
+			if ($timer !== null) {
+				$gaubuff = $timer->endtime - time();
+				$msgs []= "<{$side}>" . ucfirst($side) . " Gauntlet buff<end> runs out ".
+					"in <highlight>".$this->util->unixtimeToReadable($gaubuff)."<end>.";
+			}
+		}
+		if (empty($msgs)) {
+			if (isset($args['side'])) {
+				$sendto->reply("No <{$side}>{$side} Gauntlet buff<end> available!");
+			} else {
+				$sendto->reply("No Gauntlet buff available!");
+			}
 			return;
 		}
-		$gaubuff = $timer->endtime - time();
-		$msg = "Gauntlet buff runs out in <highlight>".$this->util->unixtimeToReadable($gaubuff)."<end>.";
-		$sendto->reply($msg);
+		$sendto->reply(join("\n", $msgs));
+	}
+
+	/**
+	 * Get a list of array for which to show the gauntlet buff(s)
+	 * @return string[]
+	 */
+	protected function getSidesToShowBuff(?string $side): array {
+		$defaultSide = $this->settingManager->getString('gaubuff_default_side');
+		$side ??= $defaultSide;
+		if ($side === static::SIDE_NONE) {
+			return ['clan', 'omni'];
+		}
+		return [$side];
 	}
 
 	//**************************************
