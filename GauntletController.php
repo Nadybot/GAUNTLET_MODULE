@@ -104,6 +104,7 @@ use Nadybot\Modules\TIMERS_MODULE\TimerController;
 class GauntletController {
 
 	public const SIDE_NONE = 'none';
+	public const TIMER = 'Gauntlet';
 
 	/**
 	 * Name of the module.
@@ -149,7 +150,7 @@ class GauntletController {
 	 * This handler is called on bot startup.
 	 */
 	public function setup() {
-		$this->db->loadSQLFile($this->moduleName, 'Gauntlet');
+		$this->db->loadMigrations($this->moduleName, __DIR__ . '/Migrations');
 		$this->settingManager->add(
 			$this->moduleName,
 			"gauntlet_timezone",
@@ -258,7 +259,7 @@ class GauntletController {
 
 	public function gauntgetTime($zz) {
 		//This wouldn't be necessary if you would add timezone option for the bot into the configs :P
-		$timer = $this->timerController->get('Gauntlet');
+		$timer = $this->timerController->get(self::TIMER);
 		if ($timer === null) {
 			return 0;
 		}
@@ -359,7 +360,7 @@ class GauntletController {
 	}
 
 	public function getGauCreator() {
-		$timer = $this->timerController->get('Gauntlet');
+		$timer = $this->timerController->get(self::TIMER);
 		if ($timer === null) {
 			return null;
 		}
@@ -373,7 +374,7 @@ class GauntletController {
 	 * @Matches("/^gauntlet$/i")
 	 */
 	public function gauntletCommand($message, $channel, $sender, $sendto, $args) {
-		$timer = $this->timerController->get('Gauntlet');
+		$timer = $this->timerController->get(self::TIMER);
 		if ($timer === null) {
 			$sendto->reply("No Gauntlettimer set! Seems like someone deleted it.");
 			return;
@@ -382,7 +383,7 @@ class GauntletController {
 		$dt = $gautimer-time();
 		$list = "Tradeskill: [<a href='chatcmd:///tell <myname> <symbol>gautrade'>Click me</a>]\n";
 		$creatorinfo = $this->getGauCreator();
-		$list .= "Timer updated by <highlight>".$creatorinfo['creator']."<end> at <highlight>".$this->tmTime($creatorinfo['createtime'])."<end>\n\n";
+		$list .= "Timer updated at <highlight>".$this->tmTime($creatorinfo['createtime'])."<end>\n\n";
 
 		//alts handler more or less 8! Every blob has its max size, so we need such a thing
 		$altInfo = $this->altsController->getAltInfo($sender);
@@ -464,15 +465,18 @@ class GauntletController {
 		return max(0, $number);
 	}
 
-	private function gaudbexists($name) {
-		$row = $this->db->queryRow("SELECT * FROM gauntlet WHERE `player` = ? LIMIT 1", $name);
-
-		return $row !== null;
+	private function gaudbexists($name): bool {
+		return $this->db->table('gauntlet')
+			->where("player", $name)
+			->exists();
 	}
 
 	private function bastioninventory($name, $ac) {
-		//check is done earlier, get data hier
-		$row = $this->db->queryRow("SELECT * FROM gauntlet WHERE `player` = ? LIMIT 1", $name);
+		//check is done earlier, get data here
+		$row = $this->db->table('gauntlet')
+			->where("player", $name)
+			->limit(1)
+			->asObj()->first();
 		$tem = unserialize($row->items);
 		if (($ac<0)&&($ac>3)) {
 			$ac = 1;
@@ -526,7 +530,11 @@ class GauntletController {
 		//Creates a db for your char
 		//1. Check if player is in db and create if not
 		if ($this->gaudbexists($sender)==false) {
-			$this->db->exec("INSERT INTO `gauntlet` (`player`, `items`) VALUES (? , ?)", $sender, serialize([0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0]));
+			$this->db->table("gauntlet")
+				->insert([
+					"player" => $sender,
+					"items" => serialize([0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0]),
+				]);
 			$msg = "Gauntlet inventory created for $sender.";
 		} else {
 			$msg = "You already have a Gauntlet inventory!";
@@ -586,10 +594,18 @@ class GauntletController {
 			return;
 		}
 		if (($args[2]>=0)&&($args[2]<17)) {
-			$row = $this->db->queryRow("SELECT * FROM gauntlet WHERE `player` = ? LIMIT 1", $name);
+			$row = $this->db->table("gauntlet")
+				->where("player", $name)
+				->limit(1)
+				->asObj()
+				->first();
 			$tt = unserialize($row->items);
 			++$tt[$args[2]];
-			$this->db->exec("UPDATE `gauntlet` SET `items` = ? WHERE `player` = ?", serialize($tt), $name);
+			$this->db->table("gauntlet")
+				->where("player", $name)
+				->update([
+					"items" => serialize($tt),
+				]);
 			$msg = "Item increased!";
 		} else {
 			$msg = "No valid itemID.";
@@ -609,12 +625,19 @@ class GauntletController {
 		if ($this->altCheck($sendto, $sender, $name) === false) {
 			return;
 		}
-		if (($args[2]>=0)&&($args[2]<17)) {
-			$row = $this->db->queryRow("SELECT * FROM gauntlet WHERE `player` = ? LIMIT 1", $name);
+		if (($args[2] >= 0) && ($args[2] < 17)) {
+			$row = $this->db->table("gauntlet")
+				->where("player", $name)
+				->limit(1)
+				->asObj()->first();
 			$tt = unserialize($row->items);
 			if ($tt[$args[2]]>0) {
 				--$tt[$args[2]];
-				$this->db->exec("UPDATE `gauntlet` SET `items` = ? WHERE `player` = ?", serialize($tt), $name);
+				$this->db->table("gauntlet")
+					->where("player", $name)
+					->update([
+						"items" => serialize($tt),
+					]);
 				$msg = "Item decreased!";
 			} else {
 				$msg = "Item is already at zero.";
@@ -687,10 +710,7 @@ class GauntletController {
 		if (empty($msgs)) {
 			return;
 		}
-		$this->chatBot->sendMassTell(
-			join("\n", $msgs),
-			$sender
-		);
+		$this->chatBot->sendMassTell(join("\n", $msgs), $sender);
 	}
 
 	/**
@@ -871,7 +891,7 @@ class GauntletController {
 		$data['repeat'] = 61620;
 
 		//*** Add Timers
-		$this->timerController->remove('Gauntlet');
+		$this->timerController->remove(self::TIMER);
 		$this->timerController->add('Gauntlet', $this->chatBot->vars['name'], $this->settingManager->get('gauntlet_channels'), $alerts, "GauntletController.gauntletcallback", json_encode($data));
 	}
 }
