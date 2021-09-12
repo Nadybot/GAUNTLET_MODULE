@@ -7,12 +7,17 @@ use DateTimeZone;
 use Nadybot\Core\CommandReply;
 use Nadybot\Core\DB;
 use Nadybot\Core\LoggerWrapper;
+use Nadybot\Core\MessageEmitter;
+use Nadybot\Core\MessageHub;
 use Nadybot\Core\Modules\ALTS\AltsController;
 use Nadybot\Core\Nadybot;
+use Nadybot\Core\Routing\RoutableMessage;
+use Nadybot\Core\Routing\Source;
 use Nadybot\Core\SettingManager;
 use Nadybot\Core\Text;
 use Nadybot\Core\Util;
 use Nadybot\Modules\TIMERS_MODULE\Alert;
+use Nadybot\Modules\TIMERS_MODULE\Timer;
 use Nadybot\Modules\TIMERS_MODULE\TimerController;
 
 /**
@@ -101,7 +106,7 @@ use Nadybot\Modules\TIMERS_MODULE\TimerController;
  *		help        = 'gaubuff.txt'
  *	)
  */
-class GauntletController {
+class GauntletController implements MessageEmitter {
 
 	public const SIDE_NONE = 'none';
 	public const TIMER = 'Gauntlet';
@@ -117,6 +122,9 @@ class GauntletController {
 
 	/** @Inject */
 	public SettingManager $settingManager;
+
+	/** @Inject */
+	public MessageHub $messageHub;
 
 	/** @Inject */
 	public Nadybot $chatBot;
@@ -144,6 +152,10 @@ class GauntletController {
 		[292538, 292772, 3], [292525, 292763, 3], [292526, 292777, 3], [292528, 292778, 3],
 		[292517,292762,3]
 	];
+
+	public function getChannelName(): string {
+		return Source::SYSTEM . "(gauntlet-buff)";
+	}
 
 	/**
 	 * @Setup
@@ -247,6 +259,11 @@ class GauntletController {
 			"none",
 			"none;clan;omni"
 		);
+		foreach (["prespawn", "spawn", "vulnerable"] as $event) {
+			$emitter = new GauntletChannel("gauntlet-{$event}");
+			$this->messageHub->registerMessageEmitter($emitter);
+		}
+		$this->messageHub->registerMessageEmitter($this);
 	}
 
 	private function tmTime($zz) {
@@ -662,13 +679,12 @@ class GauntletController {
 			if (($time - $alertTime) > time()) {
 				$alert = new Alert();
 				$alert->time = $time - $alertTime;
-				$alert->message = "<{$side}>" . ucfirst($side) . " Gauntlet buff<end> ".
-					$this->settingManager->get('gauntlet_color');
+				$alert->message = "<{$side}>" . ucfirst($side) . "<end> Gauntlet buff ";
 				if ($alertTime === 0) {
-					$alert->message .= "<highlight>expired<end>!<end>";
+					$alert->message .= "<highlight>expired<end>!";
 				} else {
 					$alert->message .= "runs out in <highlight>".
-						$this->util->unixtimeToReadable($alertTime)."<end>!<end>";
+						$this->util->unixtimeToReadable($alertTime)."<end>!";
 				}
 				$alerts []= $alert;
 			}
@@ -682,15 +698,13 @@ class GauntletController {
 		$this->timerController->add("Gaubuff_{$side}", $this->chatBot->vars['name'], $this->settingManager->get('gauntlet_channels'), $alerts, "GauntletController.gaubuffcallback", json_encode($data));
 	}
 
-	public function gaubuffcallback($timer, $alert) {
-		if ($this->settingManager->get('gauntlet_channels')== "priv") {
-			$this->chatBot->sendPrivate($alert->message, true);
-		} elseif ($this->settingManager->get('gauntlet_channels')== "guild") {
-			$this->chatBot->sendGuild($alert->message, true);
-		} elseif ($this->settingManager->get('gauntlet_channels')== "both") {
-			$this->chatBot->sendPrivate($alert->message, true);
-			$this->chatBot->sendGuild($alert->message, true);
-		}
+	public function gaubuffcallback(Timer $timer, Alert $alert) {
+		$rMsg = new RoutableMessage($alert->message);
+		$rMsg->appendPath(new Source(
+			Source::SYSTEM,
+			"gauntlet-buff"
+		));
+		$this->messageHub->handle($rMsg);
 	}
 
 	protected function showGauntletBuff(string $sender): void {
@@ -826,28 +840,26 @@ class GauntletController {
 			$altInfo = $this->altsController->getAltInfo($key);
 			foreach ($altInfo->getOnlineAlts() as $name) {
 				if ($name != $key) {
-					$this->chatBot->sendTell("<red>Gauntlet is in $tstr (subscribed with $key).<end>", $name);
+					$this->chatBot->sendMassTell("<red>Gauntlet is in $tstr (subscribed with $key).<end>", $name);
 				} else {
-					$this->chatBot->sendTell("<red>Gauntlet is in $tstr.<end>", $name);
+					$this->chatBot->sendMassTell("<red>Gauntlet is in $tstr.<end>", $name);
 				}
 			}
 		}
 	}
 
-	public function gauntletcallback($timer, $alert) {
+	public function gauntletcallback(Timer $timer, Alert $alert) {
 		if ($timer->endtime - $alert->time == 1800) {
 			$this->gauAlert("30 min");
 			//this could be upgraded by adding setting etc
 		}
-		if ($this->settingManager->get('gauntlet_channels')== "priv") {
-			$this->chatBot->sendPrivate($alert->message, true);
-		} elseif ($this->settingManager->get('gauntlet_channels')== "guild") {
-			$this->chatBot->sendGuild($alert->message, true);
-		} elseif ($this->settingManager->get('gauntlet_channels')== "both") {
-			$this->chatBot->sendPrivate($alert->message, true);
-			$this->chatBot->sendGuild($alert->message, true);
-		}
-		if (count($timer->alerts) == 0) {
+		$rMsg = new RoutableMessage($alert->message);
+		$rMsg->appendPath(new Source(
+			"spawn",
+			"gauntlet-" . ($alert->event ?? "spawn")
+		));
+		$this->messageHub->handle($rMsg);
+		if (count($timer->alerts) === 0) {
 			$data= json_decode($timer->data, true);
 			$this->setGauTime($timer->endtime + $data['repeat'], $data['creator'], $data['createtime']);
 			//roll subscribe list, keeeeeppp on rollin rollin rollin...^^
@@ -859,7 +871,7 @@ class GauntletController {
 		/** @var Alert[] */
 		$alerts = [];
 		$portaltime = $this->util->parseTime($this->settingManager->get('gauntlet_portaltime'));
-		foreach (explode(' ', $this->settingManager->get('gauntlet_times')) as $utime) {
+		foreach (preg_split('/\s+/', $this->settingManager->get('gauntlet_times')) as $utime) {
 			$alertTimes[] = $this->util->parseTime($utime);
 		}
 		$alertTimes[] = 61620-$portaltime;  //portal closes
@@ -869,18 +881,23 @@ class GauntletController {
 		rsort($alertTimes);
 		foreach ($alertTimes as $alertTime) {
 			if (($time - $alertTime)>time()) {
-				$alert = new Alert();
+				$alert = new GauntletAlert();
 				$alert->time = $time - $alertTime;
 				if ($alertTime == 0) {
-					$alert->message = $this->settingManager->get('gauntlet_color')."Vizaresh <highlight>VULNERABLE/DOWN<end>!<end>";
+					$alert->event = "vulnerable";
+					$alert->message = "Vizaresh <highlight>VULNERABLE/DOWN<end>!";
 				} elseif ($alertTime == 420) {
-					$alert->message = $this->settingManager->get('gauntlet_color')."Vizaresh <highlight>SPAWNED (7 min left)<end>!<end>";
+					$alert->event = "spawn";
+					$alert->message = "Vizaresh <highlight>SPAWNED (7 min left)<end>!";
 				} elseif ($alertTime == (61620-$portaltime)) {
-					$alert->message = $this->settingManager->get('gauntlet_color')."Portal is <highlight>GONE<end>!<end>";
+					$alert->event = "vulnerable";
+					$alert->message = "Portal is <highlight>GONE<end>!";
 				} elseif ($alertTime > (61620-$portaltime)) {
-					$alert->message = $this->settingManager->get('gauntlet_color')."Portal is open for <red>".$this->util->unixtimeToReadable($alertTime)."<end>!<end>";
+					$alert->event = "vulnerable";
+					$alert->message = "Portal is open for <red>".$this->util->unixtimeToReadable($alertTime)."<end>!";
 				} else {
-					$alert->message = $this->settingManager->get('gauntlet_color')."Gauntlet is in <highlight>".$this->util->unixtimeToReadable($alertTime)."<end>!<end>";
+					$alert->event = "prespawn";
+					$alert->message = "Gauntlet is in <highlight>".$this->util->unixtimeToReadable($alertTime)."<end>!";
 				}
 				$alerts []= $alert;
 			}
