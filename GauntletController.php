@@ -4,18 +4,20 @@ namespace Nadybot\User\Modules\GAUNTLET_MODULE;
 
 use DateTime;
 use DateTimeZone;
-use Nadybot\Core\CommandReply;
-use Nadybot\Core\DB;
-use Nadybot\Core\LoggerWrapper;
-use Nadybot\Core\MessageEmitter;
-use Nadybot\Core\MessageHub;
-use Nadybot\Core\Modules\ALTS\AltsController;
-use Nadybot\Core\Nadybot;
-use Nadybot\Core\Routing\RoutableMessage;
-use Nadybot\Core\Routing\Source;
-use Nadybot\Core\SettingManager;
-use Nadybot\Core\Text;
-use Nadybot\Core\Util;
+use Nadybot\Core\{
+	CommandReply,
+	DB,
+	LoggerWrapper,
+	MessageEmitter,
+	MessageHub,
+	Modules\ALTS\AltsController,
+	Nadybot,
+	Routing\RoutableMessage,
+	Routing\Source,
+	SettingManager,
+	Text,
+	Util,
+};
 use Nadybot\Modules\TIMERS_MODULE\Alert;
 use Nadybot\Modules\TIMERS_MODULE\Timer;
 use Nadybot\Modules\TIMERS_MODULE\TimerController;
@@ -910,5 +912,82 @@ class GauntletController implements MessageEmitter {
 		//*** Add Timers
 		$this->timerController->remove(self::TIMER);
 		$this->timerController->add('Gauntlet', $this->chatBot->vars['name'], $this->settingManager->get('gauntlet_channels'), $alerts, "GauntletController.gauntletcallback", json_encode($data));
+	}
+
+	/**
+	 * @NewsTile("gauntlet")
+	 * @Description("Show spawn status of Vizaresh spawns and the
+	 * status of the currently popped Gauntlet buff")
+	 */
+	public function gauntletNewsTile(string $sender, callable $callback): void {
+		$timerLine = $this->getGauntletTimerLine();
+		$buffLine = $this->getGauntletBuffLine();
+		if (!isset($timerLine) && !isset($buffLine)) {
+			$callback(null);
+			return;
+		}
+		$blob = "<header2>Gauntlet<end>\n".
+			($buffLine??"").
+			($timerLine??"");
+		$callback($blob);
+	}
+
+	/**
+	 * @NewsTile("gauntlet-timer")
+	 * @Description("Show when Vizaresh spawns/is vulnerable")
+	 */
+	public function gauntletTimerNewsTile(string $sender, callable $callback): void {
+		$timerLine = $this->getGauntletTimerLine();
+		if (isset($timerLine)) {
+			$timerLine = "<header2>Gauntlet<end>\n{$timerLine}";
+		}
+		$callback($timerLine);
+	}
+
+	/**
+	 * @NewsTile("gauntlet-buff")
+	 * @Description("If the Gauntlet buff has been popped, show how much is remaining")
+	 */
+	public function gauntletBuffNewsTile(string $sender, callable $callback): void {
+		$buffLine = $this->getGauntletBuffLine();
+		if (isset($buffLine)) {
+			$buffLine = "<header2>Gauntlet buff<end>\n{$buffLine}";
+		}
+		$callback($buffLine);
+	}
+
+	protected function getGauntletTimerLine(): ?string {
+		$timer = $this->timerController->get(self::TIMER);
+		if ($timer === null) {
+			return null;
+		}
+		$gautimer = $timer->endtime;
+		//if portal is open
+		$gptime = time()+61620-$gautimer;
+		if (($gptime > 0) && ($gptime <=($this->settingManager->get('gauntlet_portaltime')*60))) {
+			$gptime = $this->settingManager->get('gauntlet_portaltime')*60-$gptime;
+			return "<tab>Portal is <green>open<end> for <highlight>".
+				$this->util->unixtimeToReadable($gptime)."<end>.\n";
+		}
+		$dt = $gautimer-time();
+		return "<tab>Vizaresh will be vulnerable in <highlight>".$this->util->unixtimeToReadable($dt)."<end>.\n";
+	}
+
+	public function getGauntletBuffLine(): ?string {
+		$defaultSide = $this->settingManager->getString('gaubuff_default_side');
+		$sides = $this->getSidesToShowBuff(($defaultSide === "none") ? null : $defaultSide);
+		$msgs = [];
+		foreach ($sides as $side) {
+			$timer = $this->timerController->get("Gaubuff_{$side}");
+			if ($timer !== null) {
+				$gaubuff = $timer->endtime - time();
+				$msgs []= "<tab><{$side}>" . ucfirst($side) . " Gauntlet buff<end> runs out ".
+					"in <highlight>".$this->util->unixtimeToReadable($gaubuff)."<end>.\n";
+			}
+		}
+		if (empty($msgs)) {
+			return null;
+		}
+		return join("", $msgs);
 	}
 }
